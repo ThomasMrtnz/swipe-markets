@@ -4,15 +4,22 @@
  * Lit app_data/offres.json dans le dépôt privé (API GitHub, jeton stocké sur ce téléphone)
  * et envoie les choix par lots (événement repository_dispatch « decisions ») :
  * le workflow « Appli — choix du swipe » les écrit dans la colonne Statut du Google Sheet.
+ * Le détail de chaque offre (description, infos, lien direct) est lu à la demande dans app_data/details/.
  */
 
 const DEFAULTS = { owner: "ThomasMrtnz", repo: "veille-emploi-markets", path: "app_data/offres.json" };
 const API = "https://api.github.com";
 const YES = "À postuler";
 const NO = "Pas intéressé";
-const FLUSH_DELAY = 8000;
+const FLUSH_DELAY = 20000;
 const BATCH = 50;
 const KEEP_MS = 60 * 864e5;
+const STATUTS = ["À postuler", "Postulé", "Entretien", "Offre", "Refus"];
+const STATUT_CLASS = {
+  "À postuler": "s-todo", "Postulé": "s-sent", "Entretien": "s-int", "Offre": "s-offer", "Refus": "s-ko",
+  "Pas intéressé": "s-off", "Expirée": "s-off",
+};
+const RAW = "application/vnd.github.raw+json";
 
 /* ---------- stockage local (peut être indisponible : navigation privée, aperçus) ---------- */
 const store = {
@@ -29,7 +36,9 @@ const S = {
   cfg: { ...DEFAULTS, ...store.get("cfg", {}) },
   token: store.get("token", ""),
   data: store.get("data", null),
-  decided: store.get("decided", {}),   // id -> {statut, at, sent, lien, employeur, intitule, ville, type}
+  decided: store.get("decided", {}),   // id -> {statut, force?, at, sent, lien, employeur, intitule, ville, type}
+  details: new Map(),                   // clé de détail -> promesse du détail
+  sheet: null,                          // fiche ouverte : {o, from}
   later: store.get("later", []),       // ids repoussés en fin de pile
   history: [],                          // pour « Annuler » : {id, kind: "decide" | "later"}
   inflight: new Set(),
@@ -109,14 +118,28 @@ async function refresh() {
   }
 }
 
+/* Statut de chaque offre selon la dernière liste du serveur. */
+function serverStatus() {
+  const m = new Map();
+  for (const o of S.data?.a_trier || []) m.set(o.id, "À étudier");
+  for (const o of serverCandidatures()) m.set(o.id, o.statut);
+  return m;
+}
+function serverCandidatures() {
+  if (Array.isArray(S.data?.candidatures)) return S.data.candidatures.filter((o) => o && o.id);
+  return (S.data?.a_postuler || []).filter((o) => o && o.id).map((o) => ({ ...o, statut: YES }));
+}
+
 /* Oublie les choix déjà envoyés quand la liste du serveur les a pris en compte. */
 function prune() {
-  const pending = new Set((S.data?.a_trier || []).map((o) => o.id));
+  const srv = serverStatus();
   const old = Date.now() - KEEP_MS;
   for (const [id, d] of Object.entries(S.decided)) {
-    if (d.sent && (!pending.has(id) || d.at < old)) delete S.decided[id];
+    if (!d.sent) continue;
+    const now = srv.get(id);
+    if (now === d.statut || now === undefined || d.at < old) delete S.decided[id];
   }
-  S.later = S.later.filter((id) => pending.has(id));
+  S.later = S.later.filter((id) => srv.get(id) === "À étudier");
   save();
 }
 
@@ -142,7 +165,9 @@ async function flush({ keepalive = false } = {}) {
       chunk.forEach(([id]) => S.inflight.add(id));
       const body = JSON.stringify({
         event_type: "decisions",
-        client_payload: { decisions: chunk.map(([id, d]) => ({ id, lien: d.lien || "", statut: d.statut })) },
+        client_payload: {
+          decisions: chunk.map(([id, d]) => ({ id, lien: d.lien || "", statut: d.statut, ...(d.force ? { force: true } : {}) })),
+        },
       });
       let r;
       try {
@@ -165,7 +190,7 @@ async function flush({ keepalive = false } = {}) {
   } finally {
     S.flushing = false;
     renderStatus();
-    renderApply();
+    renderCandidatures();
   }
 }
 
@@ -197,16 +222,27 @@ function card(o) {
   const dates = [o.date && `Détectée le ${fmtDay(o.date)}`, o.publication && `publiée le ${fmtDay(o.publication)}`]
     .filter(Boolean).join(" · ");
   if (dates) c.append(el("p", "dates", dates));
-  if (o.remarque) c.append(el("p", "note", o.remarque));
+  if (o.ferme) c.append(el("p", "note", "Annonce probablement fermée"));
+  if (o.debut) c.append(el("p", "debut", `Début : ${o.debut}`));
+  else if (o.remarque) c.append(el("p", "note", o.remarque));
+  if (o.extrait) c.append(el("p", "extrait", o.extrait));
   c.append(el("div", "spacer"));
+  const row = el("div", "card-actions");
+  const more = el("button", "open", "Détails");
+  more.type = "button";
+  more.addEventListener("click", () => openDetail(o, "trier"));
+  row.append(more);
   const url = safeUrl(o.lien);
-  if (url) {
-    const a = el("a", "open", "Voir l'offre ↗");
-    a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
-    c.append(a);
-  }
+  if (url) row.append(link("open", "Site ↗", url));
+  c.append(row);
   c.append(el("div", "stamp yes", "POSTULER"), el("div", "stamp no", "PASSER"), el("div", "stamp later", "PLUS TARD"));
   return c;
+}
+
+function link(cls, text, url) {
+  const a = el("a", cls, text);
+  a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+  return a;
 }
 
 function setStamps(c, yes, no, later) {
@@ -236,6 +272,11 @@ function attachDrag(c, o) {
     c.classList.remove("dragging");
     const dt = Math.max(1, performance.now() - t0);
     const vx = dx / dt;
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8 && dt < 400) {   // simple toucher : ouvre la fiche
+      c.style.transform = ""; setStamps(c, 0, 0, 0);
+      openDetail(o, "trier");
+      return;
+    }
     if (dx > 110 || (dx > 45 && vx > 0.6)) decide(o, YES, c, dy);
     else if (dx < -110 || (dx < -45 && vx < -0.6)) decide(o, NO, c, dy);
     else if (dy < -130 && Math.abs(dy) > Math.abs(dx)) postpone(o, c);
@@ -266,21 +307,38 @@ function topCard() {
   return o ? [o, c] : [null, null];
 }
 
+function snapshot(o) {
+  return {
+    lien: o.lien || "", employeur: o.employeur || "", intitule: o.intitule || "", ville: o.ville || "",
+    type: o.type || "", date: o.date || "", d: o.d || "", debut: o.debut || "", ats: o.ats || "",
+  };
+}
+
+function commitDecision(o, statut) {
+  S.decided[o.id] = { statut, at: Date.now(), sent: 0, ...snapshot(o) };
+  S.later = S.later.filter((x) => x !== o.id);
+  S.history.push({ id: o.id, kind: "decide" });
+  store.set("hinted", true);
+  save();
+  render();
+  toast(statut === YES ? `À postuler : ${o.employeur}` : `Passée : ${o.employeur}`, true);
+  scheduleFlush();
+}
+
 function decide(o, statut, c, dy = 0) {
   if (S.animating) return;
-  flyOut(c, statut === YES ? "right" : "left", dy, () => {
-    S.decided[o.id] = {
-      statut, at: Date.now(), sent: 0,
-      lien: o.lien || "", employeur: o.employeur || "", intitule: o.intitule || "", ville: o.ville || "", type: o.type || "",
-    };
-    S.later = S.later.filter((x) => x !== o.id);
-    S.history.push({ id: o.id, kind: "decide" });
-    store.set("hinted", true);
-    save();
-    render();
-    toast(statut === YES ? `À postuler : ${o.employeur}` : `Passée : ${o.employeur}`, true);
-    scheduleFlush();
-  });
+  if (!c) { commitDecision(o, statut); return; }
+  flyOut(c, statut === YES ? "right" : "left", dy, () => commitDecision(o, statut));
+}
+
+/* Changement de statut explicite (onglet Candidatures) : écrase le statut du Sheet. */
+function setStatus(o, statut) {
+  S.decided[o.id] = { statut, force: true, at: Date.now(), sent: 0, ...snapshot(o) };
+  save();
+  closeDetail();
+  render();
+  toast(`${o.employeur || "Offre"} : ${statut}`);
+  scheduleFlush(3000);
 }
 
 function postpone(o, c) {
@@ -365,54 +423,177 @@ function renderStack() {
   stack.append(t);
 }
 
-function applyItems() {
-  const server = (S.data?.a_postuler || []).filter((o) => o && o.id);
-  const known = new Set(server.map((o) => o.id));
-  const local = Object.entries(S.decided)
-    .filter(([id, d]) => d.statut === YES && !known.has(id))
-    .sort((a, b) => b[1].at - a[1].at)
-    .map(([id, d]) => ({ id, ...d, etat: d.sent ? "Envoyé, mise à jour du Sheet en cours" : "En attente d'envoi" }));
-  return [...local, ...server];
+function candidatures() {
+  const items = [];
+  const seen = new Set();
+  for (const o of serverCandidatures()) {
+    seen.add(o.id);
+    const d = S.decided[o.id];
+    if (d && !STATUTS.includes(d.statut)) continue;           // passée en « Pas intéressé » depuis l'appli
+    items.push(d ? { ...o, statut: d.statut, attente: true } : o);
+  }
+  for (const [id, d] of Object.entries(S.decided)) {          // swipes et changements pas encore dans la liste
+    if (seen.has(id) || !STATUTS.includes(d.statut)) continue;
+    items.push({ id, ...d, attente: true });
+  }
+  return items;
 }
 
-function renderApply() {
-  const items = applyItems();
-  $("#count-postuler").textContent = S.data || items.length ? String(items.length) : "";
+function renderCandidatures() {
+  const items = candidatures();
+  const todo = items.filter((o) => o.statut === YES).length;
+  $("#count-postuler").textContent = S.data || items.length ? String(todo) : "";
   const links = $("#apply-links");
   links.replaceChildren();
-  for (const [key, label] of [["dossier_candidatures", "Dossier Drive des candidatures ↗"], ["sheet", "Google Sheet ↗"]]) {
+  for (const [key, label] of [["dossier_candidatures", "Dossiers Drive ↗"], ["sheet", "Google Sheet ↗"]]) {
     const url = safeUrl(S.data?.[key] || "");
-    if (!url) continue;
-    const a = el("a", "", label);
-    a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
-    links.append(a);
+    if (url) links.append(link("", label, url));
   }
   const list = $("#apply-list");
   list.replaceChildren();
   if (!items.length) {
-    list.append(el("li", "apply-empty", "Aucune offre à postuler pour l'instant. Glisse une carte à droite pour en ajouter."));
+    list.append(el("li", "apply-empty", "Aucune candidature pour l'instant. Glisse une carte à droite pour en ajouter."));
     return;
   }
-  for (const o of items) {
-    const li = el("li");
-    li.append(el("p", "a-emp", o.employeur || "Employeur inconnu"), el("p", "a-title", o.intitule || "(sans intitulé)"));
-    const meta = [o.ville, o.type, o.date && `détectée le ${fmtDay(o.date)}`].filter(Boolean).join(" · ");
-    if (meta) li.append(el("p", "a-meta", meta));
-    if (o.etat) li.append(el("p", "a-state", o.etat));
-    const url = safeUrl(o.lien);
-    if (url) {
-      const a = el("a", "", "Voir l'offre ↗");
-      a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
-      li.append(a);
+  for (const statut of STATUTS) {
+    const group = items.filter((o) => o.statut === statut);
+    if (!group.length) continue;
+    list.append(el("li", "group", `${statut} · ${group.length}`));
+    for (const o of group) {
+      const li = el("li", "item");
+      const b = el("button", "item-btn");
+      b.type = "button";
+      b.addEventListener("click", () => openDetail(o, "candidatures"));
+      const head = el("div", "a-head");
+      head.append(el("p", "a-emp", o.employeur || "Employeur inconnu"), el("span", `chip ${STATUT_CLASS[o.statut] || ""}`, o.statut));
+      b.append(head, el("p", "a-title", o.intitule || "(sans intitulé)"));
+      const meta = [o.ville, o.type, o.date && `détectée le ${fmtDay(o.date)}`].filter(Boolean).join(" · ");
+      if (meta) b.append(el("p", "a-meta", meta));
+      if (o.debut) b.append(el("p", "a-debut", `Début : ${o.debut}`));
+      if (o.attente) b.append(el("p", "a-state", "Mise à jour du Sheet en cours…"));
+      li.append(b);
+      list.append(li);
     }
-    list.append(li);
   }
+}
+
+/* ---------- fiche détail ---------- */
+function loadDetail(o) {
+  if (!o.d) return Promise.reject(new Error("Le détail de cette offre n'a pas encore été récupéré. Il le sera au prochain passage."));
+  if (!S.details.has(o.d)) {
+    const p = gh(repoPath(`/contents/app_data/details/${encodeURIComponent(o.d)}.json`), { accept: RAW }).then((r) => {
+      if (r.status === 404) throw new Error("Le détail de cette offre n'a pas encore été récupéré.");
+      if (!r.ok) throw new Error(`GitHub a répondu ${r.status}.`);
+      return r.json();
+    });
+    S.details.set(o.d, p);
+    p.catch(() => S.details.delete(o.d));
+  }
+  return S.details.get(o.d);
+}
+
+function openDetail(o, from) {
+  if (S.animating) return;
+  S.sheet = { o, from };
+  const body = $("#sheet-body");
+  body.replaceChildren();
+  const top = el("div", "card-top");
+  top.append(el("span", `badge t-${slug(o.type)}`, o.type || "Offre"), scoreEl(o.score));
+  body.append(top, el("p", "emp", o.employeur || "Employeur inconnu"));
+  const h = el("h2", "title full", o.intitule || "(sans intitulé)");
+  h.id = "sheet-title";
+  body.append(h);
+  const meta = [o.ville, o.source && `via ${o.source}`].filter(Boolean).join(" · ");
+  if (meta) body.append(el("p", "meta", meta));
+  const dates = [o.date && `Détectée le ${fmtDay(o.date)}`, o.publication && `publiée le ${fmtDay(o.publication)}`].filter(Boolean).join(" · ");
+  if (dates) body.append(el("p", "dates", dates));
+  if (from === "candidatures" && o.statut) {
+    const line = el("p", "status-line");
+    line.append(el("span", `chip ${STATUT_CLASS[o.statut] || ""}`, o.statut));
+    body.append(line);
+  }
+  if (o.ferme) body.append(el("p", "note", "Annonce probablement fermée : vérifie sur le site."));
+  if (o.debut) body.append(el("p", "debut", `Début : ${o.debut}`));
+  else if (o.remarque) body.append(el("p", "note", o.remarque));
+  const links = el("div", "sheet-links");
+  const first = safeUrl(o.lien);
+  if (first) links.append(link("open primary-link", "Voir l'offre sur le site ↗", first));
+  body.append(links);
+  const infos = el("dl", "infos");
+  const desc = el("div", "desc", "Chargement du détail…");
+  desc.classList.add("muted");
+  body.append(infos, el("h3", "desc-title", "Description"), desc);
+
+  const actions = $("#sheet-actions");
+  actions.replaceChildren();
+  if (from === "trier") {
+    const no = el("button", "act-wide no", "✕  Passer");
+    const yes = el("button", "act-wide yes", "✓  Postuler");
+    no.type = yes.type = "button";
+    const pick = (statut) => {
+      closeDetail();
+      const [t, c] = topCard();
+      decide(o, statut, t && t.id === o.id ? c : null);
+    };
+    no.addEventListener("click", () => pick(NO));
+    yes.addEventListener("click", () => pick(YES));
+    actions.append(no, yes);
+  } else {
+    const label = el("p", "chips-label", "Changer le statut :");
+    const chips = el("div", "chips");
+    for (const st of [...STATUTS, "Pas intéressé"]) {
+      const b = el("button", `chip ${STATUT_CLASS[st]}`, st);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(st === o.statut));
+      if (st !== o.statut) b.addEventListener("click", () => setStatus(o, st));
+      chips.append(b);
+    }
+    actions.append(label, chips);
+  }
+
+  $("#sheet").hidden = false;
+  document.body.classList.add("sheet-open");
+  body.scrollTop = 0;
+  try { history.pushState({ sheet: true }, ""); } catch { /* sans historique */ }
+  $("#sheet-close").focus({ preventScroll: true });
+
+  loadDetail(o).then((d) => {
+    if (S.sheet?.o !== o) return;
+    desc.classList.remove("muted");
+    desc.textContent = d.description || "Pas de description lisible automatiquement : ouvre l'offre sur le site.";
+    for (const [k, v] of Object.entries(d.infos || {})) {
+      infos.append(el("dt", "", k), el("dd", "", String(v)));
+    }
+    const direct = safeUrl(d.postuler || "");
+    if (direct && direct !== first) {
+      links.replaceChildren(link("open primary-link", "Postuler sur le site de l'employeur ↗", direct));
+      if (first) links.append(link("open", "Annonce d'origine ↗", first));
+    }
+    if (d.ferme && !o.ferme) desc.before(el("p", "note", "Annonce probablement fermée : vérifie sur le site."));
+  }).catch((e) => {
+    if (S.sheet?.o !== o) return;
+    desc.textContent = e instanceof TypeError ? "Pas de réseau : réessaie plus tard." : e.message;
+  });
+}
+
+function closeDetail(fromHistory = false) {
+  if ($("#sheet").hidden) return;
+  $("#sheet").hidden = true;
+  S.sheet = null;
+  document.body.classList.remove("sheet-open");
+  if (!fromHistory && history.state?.sheet) { try { history.back(); } catch { /* idem */ } }
+}
+
+/* Précharge le détail des deux prochaines cartes pour une ouverture instantanée. */
+function prefetch() {
+  for (const o of queue().slice(0, 2)) if (o.d) loadDetail(o).catch(() => {});
 }
 
 function render() {
   renderStatus();
   renderStack();
-  renderApply();
+  renderCandidatures();
+  if (S.token && S.data) prefetch();
 }
 
 function show(view) {
@@ -475,6 +656,7 @@ function resetAll() {
   if (!confirm("Effacer le jeton et les données de l'appli sur ce téléphone ?")) return;
   store.clear();
   S.token = ""; S.data = null; S.decided = {}; S.later = []; S.history = []; S.cfg = { ...DEFAULTS }; S.error = "";
+  S.details.clear();
   fillSettings();
   render();
 }
@@ -492,8 +674,12 @@ function init() {
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#btn-reset").addEventListener("click", resetAll);
 
+  $("#sheet-close").addEventListener("click", () => closeDetail());
+  window.addEventListener("popstate", () => closeDetail(true));
+
   document.addEventListener("keydown", (e) => {
-    if (S.view !== "trier" || e.target.closest("input, textarea")) return;
+    if (e.key === "Escape") { closeDetail(); return; }
+    if (S.sheet || S.view !== "trier" || e.target.closest("input, textarea")) return;
     const [o, c] = topCard();
     if (e.key === "ArrowRight" && o) decide(o, YES, c);
     else if (e.key === "ArrowLeft" && o) decide(o, NO, c);

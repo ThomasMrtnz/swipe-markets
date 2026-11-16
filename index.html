@@ -35,7 +35,7 @@
 
   <nav class="tabs" aria-label="Vues">
     <button type="button" class="tab" data-view="trier" aria-pressed="true">À trier <span class="count" id="count-trier"></span></button>
-    <button type="button" class="tab" data-view="postuler" aria-pressed="false">À postuler <span class="count" id="count-postuler"></span></button>
+    <button type="button" class="tab" data-view="postuler" aria-pressed="false">Candidatures <span class="count" id="count-postuler"></span></button>
   </nav>
 
   <main>
@@ -60,7 +60,7 @@
 
     <section id="view-postuler" class="view" hidden>
       <div class="info">
-        <p>Ta tâche Claude de 17h26 prépare pour chaque offre une lettre et des réponses prêtes à coller, dans Google Drive.</p>
+        <p>Chaque jour à 17h26, ta tâche Claude prépare la lettre et les réponses des offres « À postuler » dans Drive. Touche une candidature pour voir l'offre et changer son statut.</p>
         <p class="links" id="apply-links"></p>
       </div>
       <ul id="apply-list" class="apply-list"></ul>
@@ -104,6 +104,17 @@
       <button type="button" id="btn-reset" class="danger">Effacer le jeton et les données locales</button>
     </section>
   </main>
+
+  <div id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+    <div class="sheet-bar">
+      <button type="button" id="sheet-close" class="icon-btn" aria-label="Fermer la fiche">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <span>Détail de l'offre</span>
+    </div>
+    <div id="sheet-body" class="sheet-body"></div>
+    <div id="sheet-actions" class="sheet-actions"></div>
+  </div>
 
   <div id="toast" class="toast" role="status" hidden>
     <span id="toast-text"></span>
