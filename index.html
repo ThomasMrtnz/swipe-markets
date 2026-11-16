@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src https://api.github.com; img-src 'self' data:; style-src 'self'; script-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Swipe Markets</title>
+  <meta name="description" content="Trie les offres de ta veille d'un geste : à droite pour postuler, à gauche pour passer.">
+  <meta name="theme-color" content="#1F3A5F">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Swipe">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>Swipe Markets</h1>
+      <p id="status" class="status" aria-live="polite"></p>
+    </div>
+    <button id="btn-refresh" class="icon-btn" type="button" aria-label="Mettre à jour la liste" title="Mettre à jour">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>
+    </button>
+    <button id="btn-settings" class="icon-btn" type="button" aria-label="Réglages" title="Réglages">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+  </header>
+
+  <nav class="tabs" aria-label="Vues">
+    <button type="button" class="tab" data-view="trier" aria-pressed="true">À trier <span class="count" id="count-trier"></span></button>
+    <button type="button" class="tab" data-view="postuler" aria-pressed="false">À postuler <span class="count" id="count-postuler"></span></button>
+  </nav>
+
+  <main>
+    <section id="view-trier" class="view">
+      <div id="stack" class="stack" aria-live="polite"></div>
+      <p id="hint" class="hint" hidden>Glisse à droite pour postuler, à gauche pour passer, vers le haut pour plus tard.</p>
+      <div id="actions" class="actions">
+        <button type="button" id="btn-no" class="act act-no" aria-label="Passer (pas intéressé)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+        <button type="button" id="btn-undo" class="act act-small" aria-label="Annuler le dernier choix">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
+        </button>
+        <button type="button" id="btn-later" class="act act-small" aria-label="Plus tard">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>
+        </button>
+        <button type="button" id="btn-yes" class="act act-yes" aria-label="Postuler">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+        </button>
+      </div>
+    </section>
+
+    <section id="view-postuler" class="view" hidden>
+      <div class="info">
+        <p>Ta tâche Claude de 17h26 prépare pour chaque offre une lettre et des réponses prêtes à coller, dans Google Drive.</p>
+        <p class="links" id="apply-links"></p>
+      </div>
+      <ul id="apply-list" class="apply-list"></ul>
+    </section>
+
+    <section id="view-reglages" class="view settings" hidden>
+      <h2>Réglages</h2>
+      <form id="settings-form" autocomplete="off">
+        <label for="token">Jeton d'accès GitHub</label>
+        <input id="token" name="token" type="password" inputmode="text" spellcheck="false" autocapitalize="off"
+               placeholder="github_pat_…" autocomplete="off">
+        <p class="small">Il reste sur ce téléphone et ne sert qu'à lire la liste des offres et à envoyer tes choix à ton dépôt privé.</p>
+        <details>
+          <summary>Créer le jeton (2 min)</summary>
+          <ol>
+            <li>Sur github.com : ta photo › <b>Settings</b> › <b>Developer settings</b> › <b>Personal access tokens</b> › <b>Fine-grained tokens</b> › <b>Generate new token</b>.</li>
+            <li>Nom : <code>swipe-markets</code>. Expiration : 1 an.</li>
+            <li><b>Repository access</b> : <i>Only select repositories</i> › <code>veille-emploi-markets</code>.</li>
+            <li><b>Permissions</b> › <b>Contents</b> : <i>Read and write</i>. Rien d'autre.</li>
+            <li><b>Generate token</b>, copie-le et colle-le ci-dessus.</li>
+          </ol>
+        </details>
+        <details>
+          <summary>Dépôt</summary>
+          <label for="owner">Propriétaire</label>
+          <input id="owner" name="owner" type="text" spellcheck="false" autocapitalize="off">
+          <label for="repo">Dépôt privé</label>
+          <input id="repo" name="repo" type="text" spellcheck="false" autocapitalize="off">
+        </details>
+        <button type="submit" class="primary">Enregistrer et tester</button>
+        <p id="settings-result" class="result" aria-live="polite"></p>
+      </form>
+
+      <h3>Installer sur l'écran d'accueil</h3>
+      <ul class="small">
+        <li><b>iPhone</b> : dans Safari, bouton Partager › <i>Sur l'écran d'accueil</i>.</li>
+        <li><b>Android</b> : dans Chrome, menu ⋮ › <i>Installer l'application</i>.</li>
+      </ul>
+
+      <h3>Ce téléphone</h3>
+      <button type="button" id="btn-reset" class="danger">Effacer le jeton et les données locales</button>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden>
+    <span id="toast-text"></span>
+    <button type="button" id="toast-undo" hidden>Annuler</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

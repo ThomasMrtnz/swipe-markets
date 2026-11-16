@@ -1,0 +1,17 @@
+{
+  "name": "Swipe Markets",
+  "short_name": "Swipe",
+  "description": "Trie les offres de ta veille d'un geste : à droite pour postuler, à gauche pour passer.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0E1622",
+  "theme_color": "#1F3A5F",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
