@@ -178,6 +178,17 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 @media (prefers-color-scheme: dark) { .s-sent { --c: #7FAEF0; } .s-int { --c: #F0A46E; } }
 body.sheet-open { overflow: hidden; }
 
+/* Robot */
+.robot-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 16px 8px; padding: 10px 14px;
+  border-radius: 14px; background: var(--surface); border: 1px solid var(--line); font-size: 14px; }
+.robot-banner.urgent { background: var(--later); border-color: var(--later); color: #111; font-weight: 600; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { filter: brightness(1.12); } }
+.robot-open { flex: 1 0 100%; text-align: center; padding: 12px; border-radius: 12px; background: #111; color: #fff; text-decoration: none; font-weight: 700; }
+.robot-go { flex-basis: 100%; }
+.robot-res { padding: 12px 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); font-size: 14px; }
+.robot-res p { margin: 4px 0 0; }
+@media (min-width: 640px) { .robot-banner { width: 100%; max-width: 520px; margin-left: auto; margin-right: auto; } }
+
 /* Liste des candidatures */
 .info { font-size: 14px; color: var(--muted); }
 .info p { margin: 0 0 6px; }

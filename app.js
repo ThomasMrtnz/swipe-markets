@@ -38,6 +38,8 @@ const S = {
   data: store.get("data", null),
   decided: store.get("decided", {}),   // id -> {statut, force?, at, sent, lien, employeur, intitule, ville, type}
   details: new Map(),                   // clé de détail -> promesse du détail
+  robots: store.get("robots", {}),      // id -> {cle, at, employeur, intitule, live?, fin?} : robots lancés
+  robotTimer: null,
   sheet: null,                          // fiche ouverte : {o, from}
   later: store.get("later", []),       // ids repoussés en fin de pile
   history: [],                          // pour « Annuler » : {id, kind: "decide" | "later"}
@@ -477,6 +479,98 @@ function renderCandidatures() {
   }
 }
 
+/* ---------- robot de candidature ---------- */
+async function cleDe(id) {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(id));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+
+async function lireJson(chemin) {
+  const r = await gh(repoPath(`/contents/${chemin}`), { accept: RAW });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GitHub a répondu ${r.status}.`);
+  return r.json();
+}
+
+function quand(iso) { const t = Date.parse(iso || ""); return isNaN(t) ? 0 : t; }
+
+async function lancerRobot(o) {
+  if (!confirm("Le robot va remplir cette candidature dans le cloud.\n\nGarde ton téléphone à portée : il t'appellera "
+    + "(e-mail + bannière dans l'appli) pour un captcha ou une question, puis pour que tu valides l'envoi. Rien ne part sans ton « Envoyer ».\n\nLancer ?")) return;
+  try {
+    const r = await gh(repoPath("/dispatches"), {
+      method: "POST",
+      body: JSON.stringify({ event_type: "postuler", client_payload: { id: o.id, mode: "direct" } }),
+    });
+    if (r.status !== 204) throw new Error(r.status === 401 ? "Jeton refusé ou expiré." : `GitHub a répondu ${r.status}.`);
+  } catch (e) {
+    toast(e instanceof TypeError ? "Pas de réseau : réessaie." : e.message);
+    return;
+  }
+  S.robots[o.id] = { cle: await cleDe(o.id), at: Date.now(), employeur: o.employeur || "", intitule: o.intitule || "" };
+  store.set("robots", S.robots);
+  closeDetail();
+  toast("Robot lancé : il démarre dans 1 à 2 minutes.");
+  suivreRobots();
+}
+
+async function suivreRobots() {
+  clearTimeout(S.robotTimer);
+  const actifs = Object.entries(S.robots).filter(([, r]) => !r.fin && Date.now() - r.at < 50 * 60000);
+  for (const [id, r] of actifs) {
+    try {
+      const live = await lireJson(`app_data/live/${r.cle}.json`);
+      const recent = live && quand(live.depuis) >= r.at - 60000;
+      const avant = r.live?.url;
+      r.live = recent && live.etat === "attente" && safeUrl(live.url) ? { url: live.url, raison: live.raison || "" } : null;
+      if (r.live && r.live.url !== avant && navigator.vibrate) navigator.vibrate([200, 100, 200]);
+      const res = await lireJson(`app_data/candidatures/${r.cle}.json`);
+      if (res && quand(res.maj) >= r.at - 60000) {
+        r.fin = { statut: res.statut, message: res.message };
+        r.live = null;
+        toast(`${r.employeur} : ${res.message}`);
+        if (res.statut === "envoye") refresh();
+      }
+    } catch { /* réseau : on réessaie au prochain tour */ }
+  }
+  for (const [id, r] of Object.entries(S.robots)) if (Date.now() - r.at > 3 * 864e5) delete S.robots[id];
+  store.set("robots", S.robots);
+  renderRobots();
+  if (Object.values(S.robots).some((r) => !r.fin && Date.now() - r.at < 50 * 60000)) {
+    S.robotTimer = setTimeout(suivreRobots, 5000);
+  }
+}
+
+function renderRobots() {
+  const box = $("#robot-banner");
+  box.replaceChildren();
+  const actifs = Object.values(S.robots).filter((r) => !r.fin && Date.now() - r.at < 50 * 60000);
+  const attente = actifs.find((r) => r.live);
+  if (attente) {
+    box.className = "robot-banner urgent";
+    box.append(el("span", "", `🤖 ${attente.employeur} : le robot t'attend (${attente.live.raison || "action requise"})`));
+    box.append(link("robot-open", "Ouvrir la vue en direct", attente.live.url));
+  } else if (actifs.length) {
+    box.className = "robot-banner";
+    box.append(el("span", "", `🤖 Robot en cours : ${actifs.map((r) => r.employeur).join(", ")}…`));
+  }
+  box.hidden = !box.childElementCount;
+}
+
+async function blocRobot(o, conteneur) {
+  try {
+    const cle = await cleDe(o.id);
+    const res = await lireJson(`app_data/candidatures/${cle}.json`);
+    if (!res || S.sheet?.o !== o) return;
+    const libelle = { envoye: "Envoyée", pret: "Remplie, non envoyée", manuel: "À finir toi-même", action_requise: "Action requise", erreur: "Erreur" }[res.statut] || res.statut;
+    const bloc = el("div", "robot-res");
+    bloc.append(el("strong", "", `Robot · ${libelle}`), el("p", "", res.message || ""));
+    for (const q of res.questions || []) bloc.append(el("p", "small", `• ${q}`));
+    if (res.maj) bloc.append(el("p", "small", `Dernier passage : ${fmtStamp(res.maj)}`));
+    conteneur.append(bloc);
+  } catch { /* pas de résultat */ }
+}
+
 /* ---------- fiche détail ---------- */
 function loadDetail(o) {
   if (!o.d) return Promise.reject(new Error("Le détail de cette offre n'a pas encore été récupéré. Il le sera au prochain passage."));
@@ -539,6 +633,13 @@ function openDetail(o, from) {
     yes.addEventListener("click", () => pick(YES));
     actions.append(no, yes);
   } else {
+    if (o.statut === YES) {
+      const go = el("button", "act-wide yes robot-go", "🤖  Postuler pour moi");
+      go.type = "button";
+      go.addEventListener("click", () => lancerRobot(o));
+      actions.append(go);
+      blocRobot(o, links);
+    }
     const label = el("p", "chips-label", "Changer le statut :");
     const chips = el("div", "chips");
     for (const st of [...STATUTS, "Pas intéressé"]) {
@@ -691,6 +792,7 @@ function init() {
     else {
       if (Date.now() - S.lastRefresh > 5 * 60000) refresh();
       flush();
+      suivreRobots();
     }
   });
   window.addEventListener("online", () => flush());
@@ -699,7 +801,7 @@ function init() {
 
   render();
   if (!S.token) show("reglages");
-  else { refresh(); flush(); }
+  else { refresh(); flush(); suivreRobots(); }
 }
 
 init();
