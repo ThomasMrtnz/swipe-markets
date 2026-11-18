@@ -1,6 +1,6 @@
 /* Cache de l'appli pour l'ouvrir même sans réseau. Réseau d'abord : une nouvelle version est prise
    dès qu'elle est publiée. Les appels à l'API GitHub (autre domaine) ne passent jamais par ce cache. */
-const CACHE = "swipe-v3";
+const CACHE = "swipe-v4";
 const SHELL = ["./", "index.html", "app.js", "style.css", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png", "icons/icon-32.png"];
 

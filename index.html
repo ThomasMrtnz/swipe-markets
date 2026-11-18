@@ -25,6 +25,9 @@
       <h1>Swipe Markets</h1>
       <p id="status" class="status" aria-live="polite"></p>
     </div>
+    <button id="btn-ajouter" class="icon-btn" type="button" aria-label="Ajouter une offre par lien" title="Ajouter une offre par lien">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
     <button id="btn-refresh" class="icon-btn" type="button" aria-label="Mettre à jour la liste" title="Mettre à jour">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>
     </button>
@@ -38,6 +41,7 @@
   <nav class="tabs" aria-label="Vues">
     <button type="button" class="tab" data-view="trier" aria-pressed="true">À trier <span class="count" id="count-trier"></span></button>
     <button type="button" class="tab" data-view="postuler" aria-pressed="false">Candidatures <span class="count" id="count-postuler"></span></button>
+    <button type="button" class="tab" data-view="reseau" aria-pressed="false">Réseau</button>
   </nav>
 
   <main>
@@ -66,6 +70,11 @@
         <p class="links" id="apply-links"></p>
       </div>
       <ul id="apply-list" class="apply-list"></ul>
+    </section>
+
+    <section id="view-reseau" class="view" hidden>
+      <div class="info" id="reseau-info"></div>
+      <div id="reseau-list" class="reseau-list"></div>
     </section>
 
     <section id="view-reglages" class="view settings" hidden>

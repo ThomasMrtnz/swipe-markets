@@ -38,6 +38,7 @@ const S = {
   data: store.get("data", null),
   decided: store.get("decided", {}),   // id -> {statut, force?, at, sent, lien, employeur, intitule, ville, type}
   details: new Map(),                   // clé de détail -> promesse du détail
+  reseau: store.get("reseau", null),     // relations LinkedIn par banque, contacts ciblés, modèles de messages
   robots: store.get("robots", {}),      // id -> {cle, at, employeur, intitule, live?, fin?} : robots lancés
   robotTimer: null,
   sheet: null,                          // fiche ouverte : {o, from}
@@ -112,6 +113,10 @@ async function refresh() {
     S.lastRefresh = Date.now();
     store.set("data", data);
     prune();
+    try {
+      const reseau = await lireJson("app_data/reseau.json");
+      if (reseau) { S.reseau = reseau; store.set("reseau", reseau); }
+    } catch { /* le réseau est facultatif */ }
   } catch (e) {
     S.error = e instanceof TypeError ? "Pas de réseau : dernière liste connue affichée." : e.message;
   } finally {
@@ -479,6 +484,113 @@ function renderCandidatures() {
   }
 }
 
+/* ---------- réseau LinkedIn ---------- */
+function messagePour(c, o, banque) {
+  if (c.message) return c.message;                     // contact ciblé : message déjà rédigé
+  const modeles = S.reseau?.modeles || {};
+  const intl = /londres|london|francfort|frankfurt|milan|madrid/i.test(o?.ville || "");
+  const cle = intl ? "en" : /^rh/i.test(c.categorie || "") ? "fr_rh" : c.ton === "tu" ? "fr_tu" : "fr_vous";
+  const modele = (modeles[cle] || {})[o?.intitule ? "avec_offre" : "sans_offre"] || "";
+  return modele.replaceAll("{prenom}", c.prenom || (c.nom || "").split(" ")[0])
+    .replaceAll("{banque}", banque || "").replaceAll("{offre}", o?.intitule || "");
+}
+
+async function copier(texte) {
+  try {
+    await navigator.clipboard.writeText(texte);
+    toast("Message copié : colle-le dans LinkedIn.");
+  } catch {
+    prompt("Copie ce message :", texte);
+  }
+}
+
+function contactsDe(banque) {
+  if (!S.reseau || !banque) return [];
+  const rel = (S.reseau.banques?.[banque] || []).map((c) => ({ ...c, origine: "relation" }));
+  const cibles = (S.reseau.cibles || []).filter((c) => c.banque === banque).map((c) => ({ ...c, origine: "cible" }));
+  return [...rel, ...cibles];
+}
+
+function itemContact(c, o, banque) {
+  const li = el("li", "contact");
+  const nom = c.prenom ? `${c.prenom} ${c.nom}` : c.nom;
+  const tete = el("div", "a-head");
+  tete.append(el("p", "c-nom", nom), el("span", "chip s-off", c.origine === "relation" ? "1er degré" : (c.degre ? `${c.degre} · ciblé` : "ciblé")));
+  li.append(tete);
+  if (c.poste) li.append(el("p", "a-meta", c.poste));
+  const tags = [c.categorie, c.niveau, c.statut].filter(Boolean).join(" · ");
+  if (tags) li.append(el("p", "a-state", tags));
+  const actions = el("div", "c-actions");
+  const msg = messagePour(c, o, banque);
+  if (msg) {
+    const b = el("button", "ghost", "Copier le message");
+    b.type = "button";
+    b.addEventListener("click", () => copier(msg));
+    actions.append(b);
+  }
+  const url = safeUrl(c.url);
+  if (url) actions.append(link("ghost", "Profil ↗", url));
+  li.append(actions);
+  return li;
+}
+
+function blocReseau(o) {
+  const banque = o.employeur;
+  const contacts = contactsDe(banque);
+  if (!contacts.length) return null;
+  const bloc = el("div", "reseau-bloc");
+  bloc.append(el("h3", "desc-title", `Ton réseau chez ${banque} · ${contacts.length}`));
+  const ul = el("ul", "apply-list");
+  contacts.slice(0, 4).forEach((c) => ul.append(itemContact(c, o, banque)));
+  bloc.append(ul);
+  if (contacts.length > 4) bloc.append(el("p", "small", `Les ${contacts.length} contacts sont dans l'onglet Réseau.`));
+  return bloc;
+}
+
+function renderReseau() {
+  const info = $("#reseau-info");
+  const liste = $("#reseau-list");
+  info.replaceChildren();
+  liste.replaceChildren();
+  const r = S.reseau;
+  if (!r) {
+    info.append(el("p", "", "Pas encore de données réseau : elles arrivent après la prochaine mise à jour."));
+    return;
+  }
+  const nbBanques = Object.keys(r.par_banque || {}).length;
+  info.append(el("p", "", r.total_relations
+    ? `${plural(r.total_relations, "relation LinkedIn", "relations LinkedIn")}, dont ${Object.values(r.par_banque || {}).reduce((a, b) => a + b, 0)} dans ${plural(nbBanques, "banque visée", "banques visées")}. Mis à jour le ${fmtStamp(r.maj)}.`
+    : "Tes relations LinkedIn ne sont pas encore importées : dépose l'export LinkedIn (avec « Relations ») dans ton dossier Drive « Candidatures 2027 »."));
+  if ((r.cibles || []).length) info.append(el("p", "", `${plural(r.cibles.length, "contact ciblé", "contacts ciblés")} de ton onglet Contacts, avec leur message prêt.`));
+  const banques = new Set([...Object.keys(r.banques || {}), ...(r.cibles || []).map((c) => c.banque)]);
+  const tri = [...banques].map((b) => [b, contactsDe(b)]).sort((a, b) => b[1].length - a[1].length);
+  for (const [banque, contacts] of tri) {
+    const d = el("details", "banque");
+    d.append(el("summary", "", `${banque} · ${contacts.length}`));
+    const ul = el("ul", "apply-list");
+    contacts.forEach((c) => ul.append(itemContact(c, null, banque)));
+    d.append(ul);
+    liste.append(d);
+  }
+}
+
+/* ---------- ajout d'une offre par lien ---------- */
+async function ajouterParLien() {
+  if (!S.token) { show("reglages"); return; }
+  const url = (prompt("Colle le lien d'une offre (LinkedIn, site carrière…) ou d'une publication LinkedIn qui partage une offre :") || "").trim();
+  if (!url) return;
+  if (!safeUrl(url)) { toast("Ce n'est pas un lien valide."); return; }
+  try {
+    const r = await gh(repoPath("/dispatches"), { method: "POST",
+      body: JSON.stringify({ event_type: "ajouter", client_payload: { ajout: url } }) });
+    if (r.status !== 204) throw new Error(r.status === 401 ? "Jeton refusé ou expiré." : `GitHub a répondu ${r.status}.`);
+    toast("Offre envoyée : elle arrive en haut de ta pile d'ici 1 à 2 minutes.");
+    setTimeout(refresh, 100000);
+  } catch (e) {
+    toast(e instanceof TypeError ? "Pas de réseau : réessaie." : e.message);
+  }
+}
+
 /* ---------- robot de candidature ---------- */
 async function cleDe(id) {
   const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(id));
@@ -616,6 +728,8 @@ function openDetail(o, from) {
   const infos = el("dl", "infos");
   const desc = el("div", "desc", "Chargement du détail…");
   desc.classList.add("muted");
+  const reseau = blocReseau(o);
+  if (reseau) body.append(reseau);
   body.append(infos, el("h3", "desc-title", "Description"), desc);
 
   const actions = $("#sheet-actions");
@@ -694,12 +808,13 @@ function render() {
   renderStatus();
   renderStack();
   renderCandidatures();
+  renderReseau();
   if (S.token && S.data) prefetch();
 }
 
 function show(view) {
   S.view = view;
-  for (const v of ["trier", "postuler", "reglages"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["trier", "postuler", "reseau", "reglages"]) $(`#view-${v}`).hidden = v !== view;
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-pressed", String(t.dataset.view === view)));
   if (view === "reglages") fillSettings();
 }
@@ -770,6 +885,7 @@ function init() {
   $("#btn-undo").addEventListener("click", undo);
   $("#toast-undo").addEventListener("click", undo);
   $("#btn-refresh").addEventListener("click", () => { refresh(); flush(); });
+  $("#btn-ajouter").addEventListener("click", ajouterParLien);
   $("#btn-settings").addEventListener("click", () => show(S.view === "reglages" ? "trier" : "reglages"));
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => show(t.dataset.view)));
   $("#settings-form").addEventListener("submit", saveSettings);
